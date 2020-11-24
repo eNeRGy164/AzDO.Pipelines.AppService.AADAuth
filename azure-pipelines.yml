@@ -1,0 +1,56 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- master
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  siteName: hompus-demo
+
+steps:
+- task: AzureResourceManagerTemplateDeployment@3
+  inputs:
+    azureResourceManagerConnection: Azure
+    resourceGroupName: $(siteName)-resourcegroup
+    location: West Europe
+    csmFile: arm-deployment.json
+    overrideParameters: -siteName $(siteName)
+- task: AzureCLI@2
+  inputs:
+    azureSubscription: Azure
+    scriptType: pscore
+    scriptLocation: inlineScript
+    inlineScript: |
+      
+      # Create application
+      $appId = (az ad app create --display-name 'Auth $(siteName)' --homepage https://$(siteName).azurewebsites.net --identifier-uris https://$(siteName).azurewebsites.net --reply-urls https://$(siteName).azurewebsites.net/.auth/login/aad/callback --query 'appId' -o tsv)
+      Write-Host "App ID: $appId"
+      
+      # Add permission to sign in and read user profile
+      az ad app permission add --id $appId --api 00000002-0000-0000-c000-000000000000 --api-permissions 311a71cc-e848-46a1-bdf8-97ff7156d8e6=Scope
+      
+      # Generate new client secret
+      $password = (head /dev/urandom | tr -dc [:alnum:] | fold -w 30 | head -n 1)
+
+      # Set client secret
+      az ad app credential reset --id $appId --password $password -o none
+      
+      # Update Web App Authentication
+      az webapp auth update -n $(siteName) -g $(siteName)-resourcegroup --aad-client-id $appId --aad-client-secret $password --action LoginWithAzureActiveDirectory --enabled true --token-store true -o none
+- task: ArchiveFiles@2
+  inputs:
+    rootFolderOrFile: $(Build.SourcesDirectory)/index.php
+    includeRootFolder: false
+    archiveFile: $(Pipeline.Workspace)/$(Build.BuildId).zip
+    replaceExistingArchive: true
+- task: AzureRmWebAppDeployment@4
+  inputs:
+    azureSubscription: Azure
+    appType: webAppLinux
+    WebAppName: $(siteName)
+    packageForLinux: $(Pipeline.Workspace)/*.zip
